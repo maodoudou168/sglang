@@ -513,6 +513,12 @@ class ServerArgs:
     speculative_ngram_capacity: int = 10 * 1000 * 1000
     enable_multi_layer_eagle: bool = False
 
+    # Auto-speculative decoding: dynamically adjust num_steps based on acceptance rate
+    auto_spec: bool = False
+    speculative_config_file: Optional[str] = None
+    pos_threshold: Optional[List[float]] = None
+    neg_threshold: Optional[List[float]] = None
+
     # Expert parallelism
     ep_size: int = 1
     moe_a2a_backend: Literal[
@@ -3085,6 +3091,13 @@ class ServerArgs:
                     "speculative_eagle_topk > 1 with page_size > 1 is unstable and produces incorrect results for paged attention backends. This combination is only supported for the 'flashinfer' backend."
                 )
 
+            if self.auto_spec:
+                # Auto-spec requires topk=1 and sets initial defaults
+                self.speculative_eagle_topk = 1
+                if self.speculative_num_steps is None or self.speculative_num_steps < 1:
+                    self.speculative_num_steps = 3
+                self.speculative_num_draft_tokens = self.speculative_num_steps + 1
+
         if self.speculative_algorithm == "NGRAM":
             if not self.device.startswith("cuda"):
                 raise ValueError(
@@ -4883,6 +4896,31 @@ class ServerArgs:
             "--enable-multi-layer-eagle",
             action="store_true",
             help="Enable multi-layer Eagle speculative decoding.",
+        )
+
+        # Auto-speculative decoding
+        parser.add_argument(
+            "--auto-spec",
+            action="store_true",
+            help="Enable dynamic adjustment of speculative decoding parameters (num_steps) based on runtime acceptance rate.",
+        )
+        parser.add_argument(
+            "--speculative-config-file",
+            type=str,
+            default=ServerArgs.speculative_config_file,
+            help="Path to a JSON file containing per-model speculative decoding step configurations.",
+        )
+        parser.add_argument(
+            "--pos-threshold",
+            type=float,
+            nargs="+",
+            help="Acceptance rate thresholds for increasing num_steps, one per batch size bucket.",
+        )
+        parser.add_argument(
+            "--neg-threshold",
+            type=float,
+            nargs="+",
+            help="Acceptance rate thresholds for decreasing num_steps, one per batch size bucket.",
         )
 
         # Expert parallelism
