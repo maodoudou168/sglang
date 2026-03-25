@@ -1941,11 +1941,27 @@ if __name__ == "__main__":
             "image",
             "mooncake",
             "longbench_v2",
+            "mix-spec",
         ],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
         "--dataset-path", type=str, default="", help="Path to the dataset."
+    )
+    parser.add_argument(
+        "--mix-spec",
+        type=str,
+        default="",
+        help="Path to the mix-spec dataset JSONL file (prepared by benchmark/mix_spec/prepare_mix_dataset.py). "
+        "Used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
+        "--num-prompts-each",
+        type=int,
+        default=None,
+        help="Number of prompts to sample from each source dataset in mix-spec mode. "
+        "When set, samples this many prompts from each of gsm8k/human_eval/mtbench/sharegpt in order. "
+        "Overrides --num-prompts for mix-spec dataset. Only used when --dataset-name is 'mix-spec'.",
     )
     parser.add_argument(
         "--model",
