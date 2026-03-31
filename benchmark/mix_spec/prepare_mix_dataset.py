@@ -1,8 +1,8 @@
 """
 Prepare a mixed benchmark dataset by downloading and integrating
-GSM8K, HumanEval, MT-Bench, and ShareGPT datasets into a single JSONL file.
+GSM8K, HumanEval, MT-Bench, ShareGPT, and medium-length datasets into a single JSONL file.
 
-The data order is: GSM8K -> HumanEval -> MT-Bench -> ShareGPT (not shuffled).
+The data order is: GSM8K -> HumanEval -> MT-Bench -> ShareGPT -> Medium-length datasets (not shuffled).
 
 Usage:
     python prepare_mix_dataset.py --output mix_spec_dataset.jsonl
@@ -17,6 +17,14 @@ Usage:
         --humaneval-path /path/to/HumanEval.jsonl \
         --mtbench-path /path/to/question.jsonl \
         --sharegpt-path /path/to/ShareGPT_V3_unfiltered_cleaned_split.json
+
+    # Include medium-length datasets with local files
+    python prepare_mix_dataset.py --output mix_spec_dataset.jsonl \
+        --include-medium-length \
+        --hotpotqa-path /path/to/hotpot_dev_fullwiki_v1.json \
+        --squad-path /path/to/dev-v2.0.json \
+        --drop-path /path/to/drop_dataset \
+        --mbpp-path /path/to/mbpp.jsonl
 """
 
 import argparse
@@ -33,6 +41,16 @@ GSM8K_URL = "https://raw.githubusercontent.com/openai/grade-school-math/master/g
 HUMANEVAL_URL = "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
 MTBENCH_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
 SHAREGPT_URL = "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json"
+
+# Medium-length dataset URLs (1k-10k tokens) covering different aspects:
+# Reasoning/QA - HotpotQA (multi-hop reasoning)
+HOTPOTQA_URL = "http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_fullwiki_v1.json"
+# Reading Comprehension - SQuAD (Stanford QA)
+SQUAD_URL = "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json"
+# Numerical Reasoning - DROP (Discrete Reasoning Over Paragraphs)
+DROP_URL = "https://s3-us-west-2.amazonaws.com/allennlp/datasets/drop/drop_dataset.zip"
+# Code - MBPP (Mostly Basic Python Problems)
+MBPP_URL = "https://raw.githubusercontent.com/google-research/google-research/master/mbpp/mbpp.jsonl"
 
 # Default cache directory
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache")
@@ -236,9 +254,217 @@ def load_sharegpt(path, num_samples=None, cache_dir=CACHE_DIR):
     return records
 
 
+def load_hotpotqa(path, num_samples=None, cache_dir=CACHE_DIR):
+    """Load HotpotQA dataset and convert to unified format.
+    
+    HotpotQA is a multi-hop reasoning QA dataset with contexts typically 1k-5k tokens.
+    """
+    print("\n[5/8] Loading HotpotQA dataset...")
+    if not path or not os.path.exists(path):
+        path = download_file(
+            HOTPOTQA_URL,
+            os.path.join(cache_dir, "hotpot_dev_fullwiki_v1.json"),
+            desc="HotpotQA",
+        )
+
+    with open(path, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+
+    records = []
+    for data in dataset:
+        # Combine question with context paragraphs
+        question = data.get("question", "")
+        context = data.get("context", [])
+        
+        # Build context text from paragraphs
+        context_texts = []
+        for ctx in context:
+            if isinstance(ctx, list) and len(ctx) > 1:
+                context_texts.append(" ".join(ctx[1]))
+        
+        context_str = "\n\n".join(context_texts)
+        prompt = f"Context:\n{context_str}\n\nQuestion: {question}\nAnswer:"
+        
+        # Estimate output length (answer is typically short)
+        answer = data.get("answer", "")
+        estimated_output_len = max(len(answer) // 4, 32)
+
+        records.append(
+            {
+                "prompt": prompt,
+                "expected_output_len": estimated_output_len,
+                "source": "hotpotqa",
+            }
+        )
+
+    if num_samples is not None and num_samples < len(records):
+        records = records[:num_samples]
+
+    print(f"  Loaded {len(records)} HotpotQA samples")
+    return records
+
+
+def load_squad(path, num_samples=None, cache_dir=CACHE_DIR):
+    """Load SQuAD dataset and convert to unified format.
+    
+    SQuAD is a reading comprehension dataset with contexts typically 1k-3k tokens.
+    """
+    print("\n[6/8] Loading SQuAD dataset...")
+    if not path or not os.path.exists(path):
+        path = download_file(
+            SQUAD_URL,
+            os.path.join(cache_dir, "dev-v2.0.json"),
+            desc="SQuAD",
+        )
+
+    with open(path, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+
+    records = []
+    for article in dataset.get("data", []):
+        for paragraph in article.get("paragraphs", []):
+            context = paragraph.get("context", "")
+            for qa in paragraph.get("qas", []):
+                question = qa.get("question", "")
+                
+                prompt = f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+                
+                # Estimate output length from answers
+                answers = qa.get("answers", [])
+                if answers:
+                    answer_text = answers[0].get("text", "")
+                    estimated_output_len = max(len(answer_text) // 4, 32)
+                else:
+                    estimated_output_len = 64
+
+                records.append(
+                    {
+                        "prompt": prompt,
+                        "expected_output_len": estimated_output_len,
+                        "source": "squad",
+                    }
+                )
+
+    if num_samples is not None and num_samples < len(records):
+        records = records[:num_samples]
+
+    print(f"  Loaded {len(records)} SQuAD samples")
+    return records
+
+
+def load_drop(path, num_samples=None, cache_dir=CACHE_DIR):
+    """Load DROP dataset and convert to unified format.
+    
+    DROP is a discrete reasoning dataset with numerical reasoning over paragraphs.
+    Contexts are typically 1k-4k tokens.
+    """
+    print("\n[7/8] Loading DROP dataset...")
+    if not path or not os.path.exists(path):
+        zip_path = os.path.join(cache_dir, "drop_dataset.zip")
+        json_path = os.path.join(cache_dir, "drop_dataset", "drop_dataset_train.json")
+        
+        if os.path.exists(json_path):
+            path = json_path
+        else:
+            download_file(DROP_URL, zip_path, desc="DROP")
+            # Extract zip file
+            import zipfile
+            print("  Extracting DROP dataset...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(cache_dir)
+            path = json_path
+
+    with open(path, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+
+    records = []
+    for passage_id, passage_data in dataset.items():
+        passage_text = passage_data.get("passage", "")
+        for qa_pair in passage_data.get("qa_pairs", []):
+            question = qa_pair.get("question", "")
+            
+            prompt = f"Passage:\n{passage_text}\n\nQuestion: {question}\nAnswer:"
+            
+            # Estimate output length from answer
+            answer = qa_pair.get("answer", "")
+            if isinstance(answer, dict):
+                answer_text = answer.get("number", "") or str(answer)
+            else:
+                answer_text = str(answer)
+            estimated_output_len = max(len(answer_text) // 4, 16)
+
+            records.append(
+                {
+                    "prompt": prompt,
+                    "expected_output_len": estimated_output_len,
+                    "source": "drop",
+                }
+            )
+
+    if num_samples is not None and num_samples < len(records):
+        records = records[:num_samples]
+
+    print(f"  Loaded {len(records)} DROP samples")
+    return records
+
+
+def load_mbpp(path, num_samples=None, cache_dir=CACHE_DIR):
+    """Load MBPP dataset and convert to unified format.
+    
+    MBPP (Mostly Basic Python Problems) is a code generation dataset.
+    Prompts are typically 500-2k tokens.
+    """
+    print("\n[8/8] Loading MBPP dataset...")
+    if not path or not os.path.exists(path):
+        path = download_file(
+            MBPP_URL,
+            os.path.join(cache_dir, "mbpp.jsonl"),
+            desc="MBPP",
+        )
+
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            data = json.loads(line)
+            
+            text = data.get("text", "")
+            test_list = data.get("test_list", [])
+            
+            # Create a code generation prompt
+            prompt = f"""{text}
+
+Your code should pass these tests:
+"""
+            for test in test_list[:3]:  # Include up to 3 test cases
+                prompt += f"{test}\n"
+            
+            prompt += "\nProvide your solution:"
+            
+            # Estimate output length from reference code
+            code = data.get("code", "")
+            estimated_output_len = max(len(code) // 4, 128)
+
+            records.append(
+                {
+                    "prompt": prompt,
+                    "expected_output_len": estimated_output_len,
+                    "source": "mbpp",
+                }
+            )
+
+    if num_samples is not None and num_samples < len(records):
+        records = records[:num_samples]
+
+    print(f"  Loaded {len(records)} MBPP samples")
+    return records
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare mixed benchmark dataset (GSM8K + HumanEval + MT-Bench + ShareGPT)"
+        description="Prepare mixed benchmark dataset (GSM8K + HumanEval + MT-Bench + ShareGPT + Medium-length datasets)"
     )
     parser.add_argument(
         "--output",
@@ -281,6 +507,32 @@ def main():
         help="Number of ShareGPT samples to include. Default: all.",
     )
 
+    # Medium-length datasets (1k-10k tokens)
+    parser.add_argument(
+        "--num-hotpotqa",
+        type=int,
+        default=None,
+        help="Number of HotpotQA samples to include (multi-hop reasoning QA, 1k-5k tokens). Default: 0 (skip).",
+    )
+    parser.add_argument(
+        "--num-squad",
+        type=int,
+        default=None,
+        help="Number of SQuAD samples to include (reading comprehension, 1k-3k tokens). Default: 0 (skip).",
+    )
+    parser.add_argument(
+        "--num-drop",
+        type=int,
+        default=None,
+        help="Number of DROP samples to include (numerical reasoning, 1k-4k tokens). Default: 0 (skip).",
+    )
+    parser.add_argument(
+        "--num-mbpp",
+        type=int,
+        default=None,
+        help="Number of MBPP samples to include (Python code generation, 500-2k tokens). Default: 0 (skip).",
+    )
+
     # Per-dataset local file paths (for manual download)
     parser.add_argument(
         "--gsm8k-path",
@@ -306,24 +558,109 @@ def main():
         default="",
         help="Path to locally downloaded ShareGPT JSON file.",
     )
+    parser.add_argument(
+        "--hotpotqa-path",
+        type=str,
+        default="",
+        help="Path to locally downloaded HotpotQA JSON file.",
+    )
+    parser.add_argument(
+        "--squad-path",
+        type=str,
+        default="",
+        help="Path to locally downloaded SQuAD dev-v2.0.json file.",
+    )
+    parser.add_argument(
+        "--drop-path",
+        type=str,
+        default="",
+        help="Path to locally downloaded DROP dataset directory.",
+    )
+    parser.add_argument(
+        "--mbpp-path",
+        type=str,
+        default="",
+        help="Path to locally downloaded MBPP jsonl file.",
+    )
+
+    # Dataset selection flags
+    parser.add_argument(
+        "--include-medium-length",
+        action="store_true",
+        help="Include all medium-length datasets (HotpotQA, SQuAD, DROP, MBPP).",
+    )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default="",
+        help="Comma-separated list of datasets to include (e.g., 'gsm8k,humaneval,hotpotqa'). "
+        "If set, only these datasets will be included. Options: gsm8k, humaneval, mtbench, sharegpt, "
+        "hotpotqa, squad, drop, mbpp",
+    )
 
     args = parser.parse_args()
 
     cache_dir = args.cache_dir
 
+    # Determine which datasets to include
+    selected_datasets = None
+    if args.datasets:
+        selected_datasets = [s.strip().lower() for s in args.datasets.split(",")]
+
+    def should_include(name):
+        if selected_datasets is not None:
+            return name in selected_datasets
+        return True
+
     print("=" * 60)
     print("Preparing mixed benchmark dataset (mix-spec)")
-    print("Order: GSM8K -> HumanEval -> MT-Bench -> ShareGPT")
+    print("Order: GSM8K -> HumanEval -> MT-Bench -> ShareGPT -> HotpotQA -> SQuAD -> DROP -> MBPP")
     print("=" * 60)
 
-    # Load each dataset
-    gsm8k_records = load_gsm8k(args.gsm8k_path, args.num_gsm8k, cache_dir)
-    humaneval_records = load_humaneval(args.humaneval_path, args.num_humaneval, cache_dir)
-    mtbench_records = load_mtbench(args.mtbench_path, args.num_mtbench, cache_dir)
-    sharegpt_records = load_sharegpt(args.sharegpt_path, args.num_sharegpt, cache_dir)
+    all_records = []
+    dataset_counts = {}
 
-    # Concatenate in order (no shuffling)
-    all_records = gsm8k_records + humaneval_records + mtbench_records + sharegpt_records
+    # Load base datasets
+    if should_include("gsm8k"):
+        gsm8k_records = load_gsm8k(args.gsm8k_path, args.num_gsm8k, cache_dir)
+        all_records.extend(gsm8k_records)
+        dataset_counts["GSM8K"] = len(gsm8k_records)
+
+    if should_include("humaneval"):
+        humaneval_records = load_humaneval(args.humaneval_path, args.num_humaneval, cache_dir)
+        all_records.extend(humaneval_records)
+        dataset_counts["HumanEval"] = len(humaneval_records)
+
+    if should_include("mtbench"):
+        mtbench_records = load_mtbench(args.mtbench_path, args.num_mtbench, cache_dir)
+        all_records.extend(mtbench_records)
+        dataset_counts["MT-Bench"] = len(mtbench_records)
+
+    if should_include("sharegpt"):
+        sharegpt_records = load_sharegpt(args.sharegpt_path, args.num_sharegpt, cache_dir)
+        all_records.extend(sharegpt_records)
+        dataset_counts["ShareGPT"] = len(sharegpt_records)
+
+    # Load medium-length datasets
+    if should_include("hotpotqa") and (args.include_medium_length or args.num_hotpotqa):
+        hotpotqa_records = load_hotpotqa(args.hotpotqa_path, args.num_hotpotqa, cache_dir)
+        all_records.extend(hotpotqa_records)
+        dataset_counts["HotpotQA"] = len(hotpotqa_records)
+
+    if should_include("squad") and (args.include_medium_length or args.num_squad):
+        squad_records = load_squad(args.squad_path, args.num_squad, cache_dir)
+        all_records.extend(squad_records)
+        dataset_counts["SQuAD"] = len(squad_records)
+
+    if should_include("drop") and (args.include_medium_length or args.num_drop):
+        drop_records = load_drop(args.drop_path, args.num_drop, cache_dir)
+        all_records.extend(drop_records)
+        dataset_counts["DROP"] = len(drop_records)
+
+    if should_include("mbpp") and (args.include_medium_length or args.num_mbpp):
+        mbpp_records = load_mbpp(args.mbpp_path, args.num_mbpp, cache_dir)
+        all_records.extend(mbpp_records)
+        dataset_counts["MBPP"] = len(mbpp_records)
 
     # Write to output JSONL
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
@@ -334,10 +671,8 @@ def main():
     print("\n" + "=" * 60)
     print(f"Mixed dataset written to: {args.output}")
     print(f"Total samples: {len(all_records)}")
-    print(f"  - GSM8K:     {len(gsm8k_records)}")
-    print(f"  - HumanEval: {len(humaneval_records)}")
-    print(f"  - MT-Bench:  {len(mtbench_records)}")
-    print(f"  - ShareGPT:  {len(sharegpt_records)}")
+    for name, count in dataset_counts.items():
+        print(f"  - {name}: {count}")
     print("=" * 60)
 
 

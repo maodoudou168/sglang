@@ -1964,6 +1964,44 @@ if __name__ == "__main__":
         "Overrides --num-prompts for mix-spec dataset. Only used when --dataset-name is 'mix-spec'.",
     )
     parser.add_argument(
+        "--mix-spec-input-len",
+        type=int,
+        default=None,
+        help="Fixed input length for mix-spec dataset. If set, pad/truncate prompts to this length. "
+        "Similar to --random-input-len for random dataset. Only used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
+        "--mix-spec-range-ratio",
+        type=float,
+        default=0.0,
+        help="Range of sampled ratio of input length for mix-spec dataset. "
+        "Similar to --random-range-ratio for random dataset. Only used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
+        "--mix-spec-source",
+        type=str,
+        default=None,
+        help="Comma-separated list of source datasets to sample from in mix-spec mode. "
+        "If set, only samples from the specified sources (e.g., 'gsm8k,humaneval,hotpotqa'). "
+        "Available sources: gsm8k, human_eval, mtbench, sharegpt, hotpotqa, squad, drop, mbpp. "
+        "Only used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
+        "--mix-spec-output-len",
+        type=int,
+        default=None,
+        help="Fixed output length for mix-spec dataset. If set, overrides the expected_output_len from the dataset. "
+        "Similar to --random-output-len for random dataset. Only used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
+        "--mix-spec-output-range-ratio",
+        type=float,
+        default=0.0,
+        help="Range of sampled ratio of output length for mix-spec dataset. "
+        "Output length will be sampled from [output_len*(1-range_ratio), output_len*(1+range_ratio)]. "
+        "Similar to --random-range-ratio for random dataset. Only used when --dataset-name is 'mix-spec'.",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         help="Name or path of the model. If not set, the default model will request /v1/models for conf.",
